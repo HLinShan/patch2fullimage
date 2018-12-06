@@ -1,9 +1,17 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Nov 30 17:20:34 2018
+
+@author: hls
+one simple:get roi(x,y,w,h) for mask
+"""
 import pydicom as dicom
 import os
 import cv2
 import sys
 import  numpy as np
 import  matplotlib.pyplot as plt
+
 DIR='data/maskroi/'
 originpath='000000.dcm'
 maskpath  ='000001.dcm'
