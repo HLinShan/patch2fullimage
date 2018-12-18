@@ -1,4 +1,3 @@
-# densenet 121  class 3
 from __future__ import division, print_function
 import torch
 import torch.nn as nn
@@ -22,9 +21,10 @@ import torch.optim as optim
 import cv2
 import random
 from collections import OrderedDict
+import tensorflow
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-os.environ['CUDA_VISIBLE_DEVICES'] = "1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
 
 def compute_AUCs(gt_np, pred_np):
@@ -122,7 +122,7 @@ class GradCAM(PropagationBase):
         gcam = gcam / gcam.max() * 255.0
         cv2.imwrite(filename, np.uint8(gcam))
 
-# confusion matraix
+
 def plotCM(classes, y_true, y_pred, savname):
     '''
     classes: a list of class names
@@ -250,44 +250,142 @@ def print_learning_rate(opt):
         print("Learning rate: %f" % (param_group['lr']))
 
 
+class Bottleneck(nn.Module):
+    expansion = 4
 
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(Bottleneck, self).__init__()
 
+        self.conv1 = nn.Conv2d(inplanes, planes * 2, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes * 2)
+        self.conv2 = nn.Conv2d(planes * 2, planes * 2, kernel_size=3, stride=stride,
+                               padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes * 2)
+        self.conv3 = nn.Conv2d(planes * 2, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes * 4)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+        # print("layer5",x.shape)
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
 
 
 # construct model
-class DenseNet121(nn.Module):
+class ResNet50(nn.Module):
     """Model modified.
     The architecture of our model is the same as standard DenseNet121
     except the classifier layer which has an additional sigmoid function.
     """
 
     def __init__(self, num_classes):
-        super(DenseNet121, self).__init__()
-        self.densenet121 = models.densenet121(pretrained=True)
-        self.features = self.densenet121.features
-        num_ftrs = self.densenet121.classifier.in_features
-        #        for p in self.resnet50.conv1.parameters():
-        #            p.requires_grad = False
-        #        for p in self.resnet50.bn1.parameters():
-        #            p.requires_grad = False
-        #        for p in self.resnet50.layer1.parameters():
-        #            p.requires_grad = False
-        #        for p in self.resnet50.parameters():
-        #            p.requires_grad = False
+
+        super(ResNet50, self).__init__()
+        self.resnet50 = models.resnet50(pretrained=True)
+        self.inplanes = 2048
+        # two block
+        self.layer5 = self._make_layer(Bottleneck, 256, 2, stride=1)
+
+        # freeze parameters
+        # fix conv1/bn1/layer1 parameters
+        # for p in self.resnet50.conv1.parameters():
+        #     p.requires_grad = False
+        # for p in self.resnet50.bn1.parameters():
+        #     p.requires_grad = False
+        # for p in self.resnet50.layer1.parameters():
+        #    p.requires_grad = False
+        # fix all resnet50 layer parameters
+        # for p in self.resnet50.parameters():
+        #     p.requires_grad = False
+
+        num_ftrs = 256 * 4
+        #        self.classifier = nn.Conv2d(num_ftrs, num_classes, kernel_size=1, stride=1, padding=0, bias=True)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(num_ftrs, num_classes)
+        # fc2 --4
+        # self.fc2 = nn.Linear(num_ftrs, num_classes)
+        # fc3---2
+        # self.fc3=nn.Linear(num_ftrs,num_classes)
+        #        f4==>3
+        self.fc4 = nn.Linear(num_ftrs, num_classes)
+
+    #        self.maxpool = nn.AdaptiveMaxPool2d(1)
+    #         self.fc = nn.Linear(num_ftrs, num_classes)
+
+    # add layer
+    def _make_layer(self, block, planes, blocks, stride=1):
+        downsample = None
+        # downsample
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion,
+                          kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion),
+            )
+
+        layers = []
+        layers.append(block(self.inplanes, planes, stride, downsample))
+        self.inplanes = planes * block.expansion
+        for i in range(1, blocks):
+            layers.append(block(self.inplanes, planes))
+
+        return nn.Sequential(*layers)
 
     def forward(self, x):
-        x = self.features(x)
-        x = F.relu(x, True)
+        x = self.resnet50.conv1(x)
+        x = self.resnet50.bn1(x)
+        x = self.resnet50.relu(x)
+        x = self.resnet50.maxpool(x)
+
+        x = self.resnet50.layer1(x)
+
+        x = self.resnet50.layer2(x)
+
+        x = self.resnet50.layer3(x)
+        # print("layer3",x.shape)
+
+        # layer3 64 1024 14 14
+        x = self.resnet50.layer4(x)
+        # print("layer4",x.shape)
+        # print(self.inplanes)
+        # layer4 64 2048 7 7
+        x = self.layer5(x)
+
+        # print("after layer5",x.shape)
+        # layer5 64 1024 7 7
 
         x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
+        # print('avgpool',x.shape)#64 1024 1 1
+
+        x = x.view(x.size(0), -1)  # 64 1024
         #        print(x.size())
-        x = self.fc(x)
+        x = self.fc4(x)
+        # print("output",x.shape)#64 3
+        #        x = self.classifier(x)
         x = F.softmax(x, dim=1)
-        #        x = F.relu(x, inplace=True)
-        # print(x.shape)
+        #        x = self.maxpool(x)
+        #        x = x.view(x.size(0), -1)
+        #        x = F.softmax(x)
+        #         print("output",x.shape) 64 3
         return x
 
 
@@ -308,15 +406,15 @@ if __name__ == '__main__':
 
     #    VALID_IMAGE_LIST = './data/data_entry_test.txt'
     #    HEATMAP_IMAGE_LIST = './data/data_entry_boxonly_test_.txt'
-    SAVE_DIRS = 'Densenet_pretrain_224aug_lr0.001_Class3_pathology_roi'
+    SAVE_DIRS = 'ResNet50_pretrain_224aug_lr0.001_Class4_pathology_patch_step1'
     N_CLASSES = 3
     BATCH_SIZE = 64
-    LR = 0.001  # * 0.1 * 0.1
+    LR = 0.0001  # * 0.1 * 0.1
     CKPT_NAME = 'ResNet50_pretrain'  # pkl name for saving
     PKL_DIR = 'pkl/' + SAVE_DIRS + '/'
     LOG_DIR = 'logs/' + SAVE_DIRS + '/'
     STEP = 50000
-    TRAIN = False
+    TRAIN = True
     TEST = True
     Generate_Heatmap = False
     Pre = True
@@ -327,7 +425,7 @@ if __name__ == '__main__':
     else:
         os.mkdir(OUTPUT_DIR)
 
-    CKPT_PATH = PKL_DIR + CKPT_NAME + '_' + str(3850) + '.pkl'  # pretrain model for loading
+    CKPT_PATH = PKL_DIR + CKPT_NAME + '_' + str(0) + '.pkl'  # pretrain model for loading
 
     # prepare training set
     print('prepare training set...')
@@ -347,7 +445,7 @@ if __name__ == '__main__':
     # initialize and load the model
     print('initialize and load the model...')
 
-    model = DenseNet121(N_CLASSES)
+    model = ResNet50(N_CLASSES)
     #    print(model.state_dict().keys())
     #    asas
     if Pre:
@@ -558,185 +656,4 @@ if __name__ == '__main__':
         for idx in range(N_CLASSES):
             print('The AUROC of {} is {}'.format(CLASS_NAMES[idx], AUROCs[idx]))
 
-'''
-    if Generate_Heatmap:
-        model = torch.nn.DataParallel(model).cuda()
-        model.eval()
-        gcam = GradCAM(model=model, cuda=True)
-        #=================initialize the prediction and ground truth for bbox================
-        prediction = {}
-        ground = {}
-        color_map = np.array([[255, 0, 0], [0, 255, 0]])#red: pred, G: gt
-        font = cv2.FONT_HERSHEY_COMPLEX
-        total_heatmap_length = len(heatmap_loader)
-        CLASS_NAMES = ['Benign', 'Malignant', 'Normal']
-        # CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax']
-        thresholds = [0.11, 0.027, 0.14, 0.14, 0.05, 0.054, 0.013,
-                      0.05, 0.05, 0.027, 0.023, 0.015, 0.029, 0.002]  
-        for p, (input_var, target, weight, img_name, ill_name, b_box) in enumerate(heatmap_loader):
-
-            img_name = str(img_name).split('/')[-1].split("'")[0]
-            ill_name = str(ill_name).split("'")[1]
-            if not img_name in ground:
-                ground[img_name] = {}
-            if not ill_name in ground[img_name]:
-                ground[img_name][ill_name] = []
-            ground[img_name][ill_name].append(b_box)   
-
-            print('the [%d] testimg'%p)
-            input_img = Variable(input_var.cuda(), requires_grad=True)
-            probs = gcam.forward(input_img)  
-#            probs_np = probs.data.cpu().numpy()
-
-            #---- Blend original and heatmap                   
-            heatmap_output = []                    
-            activate_classes = np.where((np.squeeze(probs)[:8] > thresholds[:8])==True)[0]               
-            for activate_class in activate_classes:
-
-                gcam.backward(idx=activate_class)
-                output = gcam.generate(target_layer="module.densenet121.features.denseblock4.denselayer16.conv2")
-#                output = cv2.resize(output, (224, 224))
-
-                if np.sum(np.isnan(output)) > 0:
-                    print("fxxx nan")
-                heatmap_output.append(output)
-
-            for k, npy in zip(activate_classes, heatmap_output):
-
-                ill_name_pre = CLASS_NAMES[k]
-
-                hmask  = npy
-                if np.isnan(hmask).any():
-                    continue                  
-
-                if not img_name in prediction:
-                    prediction[img_name] = {}
-                if not ill_name_pre in prediction[img_name]:
-                    prediction[img_name][ill_name_pre] = {}
-                    prediction[img_name][ill_name_pre]['heatmap'] = []                     
-                prediction[img_name][ill_name_pre]['heatmap'].append(hmask) 
-
-        color = {CLASS_NAMES[0]: [255, 0, 0], CLASS_NAMES[1]: [0, 255, 0], CLASS_NAMES[2]: [0, 0, 255], 
-                      CLASS_NAMES[3]: [240,255,0], CLASS_NAMES[4]: [128, 0, 128], CLASS_NAMES[5]: [244,164,96], 
-                      CLASS_NAMES[6]: [119,136,153], CLASS_NAMES[7]: [50,205,50]}
-        gtall_num = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        acc = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        afp = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        thresholds = {'Atelectasis':0.5, 'Cardiomegaly':0.01, 'Effusion':0.5, 
-                      'Infiltration':0.5, 'Mass':0.5, 'Nodule':0.5, 
-                      'Pneumonia':0.02, 'Pneumothorax':0.06} 
-        best_ior = {'Atelectasis': 0.0, 'Cardiomegaly': 0.0, 'Effusion': 0.0, 'Infiltration': 0.0, 'Mass': 0.0, 'Nodule': 0.0, 'Pneumonia': 0.0,
-        'Pneumothorax': 0.0}
-        best_t = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        iou = {}
-        for t in np.arange(0.01,1,0.01):
-            for img_name in ground:                
-                imgOriginal = cv2.imread(os.path.join(DATA_DIR, img_name), 1)
-                w_ori = np.shape(imgOriginal)[1]
-                h_ori = np.shape(imgOriginal)[0]
-                gt_num = 0
-                positive_num = 0
-                for ill_name in ground[img_name]:
-                    gmask = np.zeros([h_ori, w_ori])
-                    for i in range(len(ground[img_name][ill_name])):
-                        x = int(ground[img_name][ill_name][i][0])
-                        y = int(ground[img_name][ill_name][i][1])
-                        w = int(ground[img_name][ill_name][i][2])
-                        h = int(ground[img_name][ill_name][i][3])
-                    gmask[y:y+h, x:x+w] = 1
-                    if not ill_name in iou:
-                        iou[ill_name] = {}
-                        iou[ill_name]['count'] = 0
-                        iou[ill_name]['iou'] = 0.0
-                    if img_name in prediction:
-                        for ill_name_pre in prediction[img_name]:
-                            if ill_name_pre == ill_name:
-                                hmask = prediction[img_name][ill_name_pre]['heatmap'][0]
-                                hmask[np.where(hmask<t)] = 0
-                                hmask = cv2.resize(hmask, (h_ori, w_ori))   
-                                hmask[np.where(hmask!=0)] = 1 
-                                if np.sum(hmask) == 0:
-                                    continue
-                                IOU = np.sum(hmask*gmask)/(np.sum(hmask)+np.sum(gmask)-np.sum(hmask*gmask))
-                                iou[ill_name]['iou'] += IOU
-                                iou[ill_name]['count'] += 1
-            for ill in best_ior:
-                if iou[ill]['count'] == 0: continue
-                IOU=iou[ill]['iou']/iou[ill]['count']
-                if IOU>best_ior[ill]: 
-                    best_ior[ill]=IOU
-                    best_t[ill] = t
-                iou[ill]['iou']=0.0
-                iou[ill]['count']=0
-        for ill in best_ior:
-            print('[best_ior/best_threshold][{}/{}] of {}'.format(best_ior[ill],best_t[ill],ill))
-        a=1/0
-        ior = {}
-        for img_name in ground:                
-            imgOriginal = cv2.imread(os.path.join(DATA_DIR, img_name), 1)
-            w_ori = np.shape(imgOriginal)[1]
-            h_ori = np.shape(imgOriginal)[0]
-            gt_num = 0
-            positive_num = 0
-            for ill_name in ground[img_name]:
-                gmask = np.zeros([h_ori, w_ori])
-                for i in range(len(ground[img_name][ill_name])):
-                    x = int(ground[img_name][ill_name][i][0])
-                    y = int(ground[img_name][ill_name][i][1])
-                    w = int(ground[img_name][ill_name][i][2])
-                    h = int(ground[img_name][ill_name][i][3])
-                    cv2.rectangle(imgOriginal, (x, y), (x+w, y+h), color_map[1], 2)
-                    cv2.putText(imgOriginal, ill_name, (x, y), font, 1, color_map[1], 1)
-                    gmask[y:y+h, x:x+w] = 1
-                gtall_num[ill_name] += 1                
-                if not ill_name in ior:
-                    ior[ill_name] = {}
-                    ior[ill_name]['count'] = 0
-                    ior[ill_name]['ior'] = 0.0
-                if img_name in prediction:
-                    for ill_name_pre in prediction[img_name]:
-                        if ill_name_pre == ill_name:
-                            hmask = prediction[img_name][ill_name_pre]['heatmap'][0] 
-                            hmask[np.where(hmask<thresholds[ill_name_pre])] = 0 
-                            hmask = cv2.resize(hmask, (h_ori, w_ori))  
-                            hmmask = hmask/hmask.max()                  
-                            hmmask = cv2.applyColorMap(np.uint8(255*hmmask), cv2.COLORMAP_JET) 
-                            img = hmmask*0.5 + imgOriginal
-                            outname = os.path.join(OUTPUT_DIR, img_name+'_'+ ill_name_pre +'.png')
-                            cv2.imwrite(outname, img)   
-
-                            hmask[np.where(hmask!=0)] = 1
-                            if np.sum(hmask) == 0:
-                                continue
-                            iobb = np.sum(hmask*gmask)/np.sum(hmask)
-                            ior[ill_name]['ior'] += iobb
-                            ior[ill_name]['count'] += 1
-                            if iobb >= 0.1: acc[ill_name] += 1
-                            elif iobb < 0.1: afp[ill_name] += 1           
-
-
-                        if not ill_name_pre in ground[img_name]:
-                            afp[ill_name_pre] += 1
-        ACC = 0.0
-        AFP = 0.0
-        IOR = 0.0
-        for ill_name in gtall_num:
-            acc[ill_name] = float(acc[ill_name])/float(gtall_num[ill_name])
-            ACC += acc[ill_name]
-            afp[ill_name] = float(afp[ill_name])/float(gtall_num[ill_name])
-            AFP += afp[ill_name]
-            print('The ACC of {} with threshold {} is : {}'.format(ill_name, 0.1, acc[ill_name]))
-            print('The AFP of {} with threshold {} is : {}'.format(ill_name, 0.1, afp[ill_name]))  
-            if ior[ill_name]['count'] == 0:continue
-            ior[ill_name]['avgIoR'] = float(ior[ill_name]['ior'])/float(ior[ill_name]['count'])
-            IOR += ior[ill_name]['avgIoR']      
-            print('The avgIoR of {} is : {}'.format(ill_name, ior[ill_name]['avgIoR']))  
-        print('The average of ACC is : {}'.format(ACC/8.0))
-        print('The average of AFP is : {}'.format(AFP/8.0))
-        print('The average of IOR is : {}'.format(IOR/8.0))
-        '''
 

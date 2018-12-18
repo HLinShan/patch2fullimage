@@ -1,4 +1,4 @@
-
+# step 3 resnet  3class
 from __future__ import division, print_function
 import torch
 import torch.nn as nn
@@ -154,10 +154,12 @@ class ChestXrayDataSet(Dataset):
                 image_name= items[0]
                 label = items[1]
                 label = [int(i) for i in label]
-#                if label == [1]:
-#                    label = [0]
-#                elif label == [3] or label == [2]:
-#                    label = [1]
+                if label == [0] or label==[1]:
+                   label = [0]
+                elif label == [2] or label == [3]:
+                   label = [1]
+                elif label==[4]:
+                    label=[2]
                 label = np.eye(N_CLASSES, dtype=int)[label[0]]#onehot
                 image_name = os.path.join(data_dir, image_name)
                 image_names.append(image_name)
@@ -183,18 +185,21 @@ class ChestXrayDataSet(Dataset):
         """
         image_name = self.image_names[index]
         image = cv2.imread(image_name)
+        # print(image_name)
+
+        # cv2.imshow('before', image)
+        image = cv2.resize(image,(224,224))
+        # image = cv2.resize(image, (896,1152))
 
 
-        # image = cv2.resize(image, (224,224))
-        image = cv2.resize(image, (1152,896))
-
-#        cv2.imshow('before', image)
         if self.augm:
             image = augment(image, self.angle)
         image = normalize_between(image, 0, 1)
-#        cv2.imshow('after', image)
-#        cv2.waitKey()
+        # cv2.imshow('after', image)
+        cv2.waitKey()
         image = np.transpose(image, [2, 0, 1])
+
+
         label = self.labels[index]
         label_inverse = np.ones(len(label)) - label
         weight = np.add((label_inverse * self.label_weight_neg),(label * self.label_weight_pos))
@@ -314,9 +319,11 @@ class ResNet50(nn.Module):
 #        self.classifier = nn.Conv2d(num_ftrs, num_classes, kernel_size=1, stride=1, padding=0, bias=True)
         self.avgpool= nn.AdaptiveAvgPool2d(1)
         # fc2 --4
-        self.fc2 = nn.Linear(num_ftrs, num_classes)
+        # self.fc2 = nn.Linear(num_ftrs, num_classes)
         # fc3---2
         # self.fc3=nn.Linear(num_ftrs,num_classes)
+#        f4==>3
+        self.fc4=nn.Linear(num_ftrs,num_classes)
 
 #        self.maxpool = nn.AdaptiveMaxPool2d(1)
 #         self.fc = nn.Linear(num_ftrs, num_classes)
@@ -363,47 +370,53 @@ class ResNet50(nn.Module):
         x=self.layer5(x)
 
         # print("after layer5",x.shape)
+        # layer5 64 1024 7 7
 
         x = self.avgpool(x)
-        # print('avgpool',x.shape)
+        # print('avgpool',x.shape)#64 1024 1 1
 
-        x = x.view(x.size(0), -1)
+        x = x.view(x.size(0), -1)# 64 1024
 #        print(x.size())
-        x = self.fc2(x)
-        # print("output",x.shape)
+        x = self.fc4(x)
+        # print("output",x.shape)#64 3
 #        x = self.classifier(x)
         x = F.softmax(x, dim=1)
 #        x = self.maxpool(x)
 #        x = x.view(x.size(0), -1)
 #        x = F.softmax(x)
+#         print("output",x.shape) 64 3
         return x
 
         
 if __name__ == '__main__':
-    #   patch image data
-    # DATA_DIR = './patch-img'
-    # TRAIN_DIR_PATCH = './patch-img/patch-training-png'
-    # TEST_DIR_PATCH = './patch-img/patch-test-png'
-    # TRAIN_IMAGE_LIST = './patch-img/train_patch_list.txt'
-    # VALID_IMAGE_LIST = './patch-img/test_patch_list.txt'
+    #   patch image data roi image
+    DATA_DIR = './roi-img'
+    TRAIN_DIR_ROI = './roi-img/roi_images_sample'
+    TEST_DIR_ROI =  './roi-img/roi_images'
+    TRAIN_ROI_LIST ='./roi-img/roi_images_sample/train_roi_images_sample.txt'
+    TEST_ROI_LIST = './roi-img/roi_images/test_roi_images.txt'
+
+
+
     #   full image  data
-    DATA_DIR = './full-img'
-    TRAIN_DIR_PATCH = './full-img'
-    TEST_DIR_PATCH = './full-img'
-    TRAIN_IMAGE_LIST = './full-img/train_full_images.txt'
-    VALID_IMAGE_LIST = './full-img/test_full_images.txt'
+    # DATA_DIR = './full-img'
+    # TRAIN_DIR_PATCH = './full-img'
+    # TEST_DIR_PATCH = './full-img'
+    # TRAIN_IMAGE_LIST = './full-img/train_full_images.txt'
+    # VALID_IMAGE_LIST = './full-img/test_full_images.txt'
 
 #    VALID_IMAGE_LIST = './data/data_entry_test.txt'
 #    HEATMAP_IMAGE_LIST = './data/data_entry_boxonly_test_.txt'
     SAVE_DIRS = 'ResNet50_pretrain_224aug_lr0.001_Class4_pathology_patch_step1'
-    N_CLASSES = 4
-    BATCH_SIZE = 4
-    LR = 0.0005# * 0.1 * 0.1
+    N_CLASSES = 3
+    BATCH_SIZE = 64
+    LR = 0.0001# * 0.1 * 0.1
     CKPT_NAME = 'ResNet50_pretrain'#pkl name for saving
     PKL_DIR = 'pkl/'+SAVE_DIRS +'/'
     LOG_DIR = 'logs/' + SAVE_DIRS +'/'
-    STEP = 10000
+    STEP = 50000
     TRAIN = True
+    TEST=True
     Generate_Heatmap = False
     Pre = True
     correct_pre = 0
@@ -417,32 +430,19 @@ if __name__ == '__main__':
         
     # prepare training set
     print('prepare training set...')
-    train_dataset = ChestXrayDataSet(data_dir=TRAIN_DIR_PATCH,
-                            image_list_file=TRAIN_IMAGE_LIST,
+    train_dataset = ChestXrayDataSet(data_dir=TRAIN_DIR_ROI,
+                            image_list_file=TRAIN_ROI_LIST,
                             train_or_valid="train",
                             augm=True
                                 )
     # prepare validation set
     print('prepare validation set...')
-    valid_dataset = ChestXrayDataSet(data_dir=TEST_DIR_PATCH,
-                            image_list_file=VALID_IMAGE_LIST,
+    valid_dataset = ChestXrayDataSet(data_dir=TEST_DIR_ROI,
+                            image_list_file=TEST_ROI_LIST,
                             train_or_valid="valid"
 			)
     valid_loader = DataLoader(dataset=valid_dataset, batch_size=1, shuffle=False)
-    
-    # prepare validation set
-#    print('prepare validation set...')
-#    heatmap_dataset = ChestXrayDataSet(data_dir=DATA_DIR,
-#                            image_list_file=HEATMAP_IMAGE_LIST,
-#                            train_or_valid="valid",
-#                            bbox = True,
-#                            transform=transforms.Compose([
-#                                transforms.Resize(256),
-#                    			transforms.CenterCrop(224),
-#                    			transforms.ToTensor(),
-#                    			transforms.Normalize([0.485, 0.456, 0.406],[0.229, 0.224, 0.225])
-#			]))
-#    heatmap_loader = DataLoader(dataset=heatmap_dataset, batch_size=1, shuffle=False)
+
 
     # initialize and load the model
     print('initialize and load the model...')
@@ -472,16 +472,16 @@ if __name__ == '__main__':
         print("=> loaded checkpoint: %s"%CKPT_PATH)
     else:
         print("=> no checkpoint found")
-        
+
     if TRAIN:
         if os.path.isdir(PKL_DIR):
             pass
         else:
-            os.mkdir(PKL_DIR) 
+            os.mkdir(PKL_DIR)
         if os.path.isdir(LOG_DIR):
             pass
         else:
-            os.mkdir(LOG_DIR) 
+            os.mkdir(LOG_DIR)
         writer = SummaryWriter(LOG_DIR)
         # ====== start training =======
         print('start training...')
@@ -490,12 +490,12 @@ if __name__ == '__main__':
         optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LR, weight_decay=1e-5)
 #        optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=LR, momentum=0.9)
 #         define the changing of the learning rate
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1000, gamma=0.1)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20000, gamma=0.1)
         model = torch.nn.DataParallel(model).cuda()
         model.train()
-        
+
         running_loss = 0.0
-        
+
         total_train_length = len(train_dataset)
         total_valid_length = len(valid_dataset)
         perm = np.random.permutation(np.arange(total_train_length))
@@ -506,8 +506,8 @@ if __name__ == '__main__':
             augment_img = []
             augment_label = []
             augment_weight = []
-        
-#                print('load training data') 
+
+#                print('load training data')
             end = cur + BATCH_SIZE
             p_indexs = perm[cur: end]
             cur = int(cur + BATCH_SIZE)
@@ -533,7 +533,8 @@ if __name__ == '__main__':
 #                print('forward + backward + optimize...')
 #           softmax predict
             outputs = model(inputs_sub)
-            
+            # print("outputs,train",outputs.shape)
+
 #            labels_sub = labels_sub.view(-1)
             labels_np = labels_sub.data.cpu().numpy()
 #            weights[0] = len(labels_np)/(np.sum(labels_np == 0)+1)
@@ -542,7 +543,7 @@ if __name__ == '__main__':
 #            weights[3] = len(labels_np)/(np.sum(labels_np == 3)+1)
 #            weights[4] = len(labels_np)/(np.sum(labels_np == 4)+1)
 #            weights =Variable( torch.from_numpy(weights).type(torch.FloatTensor).cuda())
-            
+
             outputs_np = outputs.data.cpu().numpy()
 #            criterion = nn.CrossEntropyLoss()#weight = weights)
             bce_criterion = nn.BCELoss(size_average=True)
@@ -550,30 +551,30 @@ if __name__ == '__main__':
             loss = bce_criterion(outputs, labels_sub)
 #                loss = F.binary_cross_entropy(outputs, labels_sub, size_average=False)
             loss.backward()
-            optimizer.step()                
+            optimizer.step()
             scheduler.step()
             running_loss += loss.data[0]
-        
+
             if step%20 == 0:
                 running_loss = running_loss/20
+                # with open('train_running_loss.txt', 'a+') as f:
+                #     f.write(step+' '+running_loss)
                 print('[STEP:%d] loss: %.6f' % (step, running_loss))
                 writer.add_scalar('Loss1', running_loss, step)
                 running_loss = 0.
-        
+
             if step%50 == 0:
                 model.eval()
                 running_loss_val = 0.
                 # test
                 print('Validation Testing......')
-                CLASS_NAMES = ['calcification_Benign', 'mass_Benign', 'calcification_Malignant', 'mass_Malignant']
+                # 0 1 2
+                CLASS_NAMES = ['Benign', 'Malignant', 'Normal']
                 print_learning_rate(optimizer)
-                gt = torch.FloatTensor()
-                gt = gt.cuda()
-                pred = torch.FloatTensor()
-                pred = pred.cuda()
+
                 correct = []
                 for p, (inputs_sub, labels_sub, weights_sub) in enumerate(valid_loader):
-        
+
                     inputs_sub = Variable(inputs_sub.cuda())
                     labels_sub = Variable(labels_sub.cuda())
 #                    labels_sub = labels_sub.view(-1)
@@ -594,7 +595,7 @@ if __name__ == '__main__':
                 correctsum = np.sum(correct)/total_valid_length
                 print('Accuracy of the network on test images: %.4f' % (correctsum))
                 writer.add_scalar('Acc_val', correctsum, step)
-                model.train() 
+                model.train()
                 # print statistics
                 print('************************************')
     #            print('[EPOCH:%d] running_loss: %.8f' % (epoch, running_loss / (total_train_length / BATCH_SIZE)))
@@ -606,15 +607,16 @@ if __name__ == '__main__':
                     correct_pre = correctsum
                     print('Save best statistics done!')
                 print('************************************')
-            
-        writer.close()
-        print('Finished Training')   
 
-    if not Generate_Heatmap:
+        writer.close()
+        print('Finished Training')
+
+    if TEST:
         model = torch.nn.DataParallel(model).cuda()
         model.eval()
         total_valid_length = len(valid_dataset)
-        CLASS_NAMES = ['calcification_Benign', 'mass_Benign', 'calcification_Malignant', 'mass_Malignant']
+        # 0 1 2
+        CLASS_NAMES = ['Benign', 'Malignant', 'Normal']
         print(' initialize the ground truth and output tensor...')
         gt = torch.FloatTensor()
         gt = gt.cuda()
@@ -667,7 +669,8 @@ if __name__ == '__main__':
         color_map = np.array([[255, 0, 0], [0, 255, 0]])#red: pred, G: gt
         font = cv2.FONT_HERSHEY_COMPLEX
         total_heatmap_length = len(heatmap_loader)
-        CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax']
+        CLASS_NAMES = ['Benign', 'Malignant', 'Normal']
+        # CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax']
         thresholds = [0.11, 0.027, 0.14, 0.14, 0.05, 0.054, 0.013,
                       0.05, 0.05, 0.027, 0.023, 0.015, 0.029, 0.002]  
         for p, (input_var, target, weight, img_name, ill_name, b_box) in enumerate(heatmap_loader):
@@ -835,4 +838,5 @@ if __name__ == '__main__':
         print('The average of ACC is : {}'.format(ACC/8.0))
         print('The average of AFP is : {}'.format(AFP/8.0))
         print('The average of IOR is : {}'.format(IOR/8.0))
-    '''
+        '''
+

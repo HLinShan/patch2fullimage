@@ -1,4 +1,3 @@
-# densenet 121  class 3
 from __future__ import division, print_function
 import torch
 import torch.nn as nn
@@ -30,7 +29,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = "1"
 def compute_AUCs(gt_np, pred_np):
     AUROCs = []
     for i in range(N_CLASSES):
-        AUROCs.append(roc_auc_score(gt_np[:, i], pred_np[:, i]))
+        AUROCs.append(roc_auc_score(gt_np, pred_np))
     return AUROCs
 
 
@@ -122,7 +121,7 @@ class GradCAM(PropagationBase):
         gcam = gcam / gcam.max() * 255.0
         cv2.imwrite(filename, np.uint8(gcam))
 
-# confusion matraix
+
 def plotCM(classes, y_true, y_pred, savname):
     '''
     classes: a list of class names
@@ -143,6 +142,19 @@ def plotCM(classes, y_true, y_pred, savname):
     # save
     plt.savefig(savname)
 
+# def plot_confusion_matrix(classes,y_true,y_pred, savename, cmap=plt.cm.binary):
+#     cm=confusion_matrix(y_true,y_pred,classes)
+#     plt.imshow(cm, interpolation='nearest', cmap=cmap)
+#     plt.title(title)
+#     plt.colorbar()
+#     xlocations = np.array(range(len(y_true)))
+#     plt.xticks(xlocations, y_true, rotation=90)
+#     plt.yticks(xlocations, y_true)
+#     plt.ylabel('True label')
+#     plt.xlabel('Predicted label')
+#     plt.savefig(title)
+
+
 
 # ====== prepare dataset ======
 class ChestXrayDataSet(Dataset):
@@ -157,14 +169,14 @@ class ChestXrayDataSet(Dataset):
                 items = line.split()
                 image_name = items[0]
                 label = items[1]
-                label = [int(i) for i in label]
-                if label == [0] or label == [1]:
+                label = [int(i) for i in label] #be
+                if label == [0] or label == [1] or label == [4]:
                     label = [0]
-                elif label == [2] or label == [3]:
+                elif label == [2] or label == [3]:#
                     label = [1]
-                elif label == [4]:
-                    label = [2]
-                label = np.eye(N_CLASSES, dtype=int)[label[0]]  # onehot
+
+                # label = np.eye(N_CLASSES, dtype=int)[label[0]]
+
                 image_name = os.path.join(data_dir, image_name)
                 image_names.append(image_name)
                 labels.append(label)
@@ -252,43 +264,74 @@ def print_learning_rate(opt):
 
 
 
-
-
 # construct model
-class DenseNet121(nn.Module):
+class ResNet50(nn.Module):
     """Model modified.
     The architecture of our model is the same as standard DenseNet121
     except the classifier layer which has an additional sigmoid function.
     """
 
     def __init__(self, num_classes):
-        super(DenseNet121, self).__init__()
-        self.densenet121 = models.densenet121(pretrained=True)
-        self.features = self.densenet121.features
-        num_ftrs = self.densenet121.classifier.in_features
-        #        for p in self.resnet50.conv1.parameters():
-        #            p.requires_grad = False
-        #        for p in self.resnet50.bn1.parameters():
-        #            p.requires_grad = False
-        #        for p in self.resnet50.layer1.parameters():
-        #            p.requires_grad = False
-        #        for p in self.resnet50.parameters():
-        #            p.requires_grad = False
-        self.avgpool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Linear(num_ftrs, num_classes)
+
+        super(ResNet50, self).__init__()
+        self.resnet50 = models.resnet50(pretrained=True)
+
+        # two block
+        # self.layer5 = self._make_layer(Bottleneck, 256, 2, stride=1)
+
+
+        # freeze parameters
+        # fix conv1/bn1/layer1 parameters
+        # for p in self.resnet50.conv1.parameters():
+        #     p.requires_grad = False
+        # for p in self.resnet50.bn1.parameters():
+        #     p.requires_grad = False
+        # for p in self.resnet50.layer1.parameters():
+        #    p.requires_grad = False
+        # fix all resnet50 layer parameters
+        # for p in self.resnet50.parameters():
+        #     p.requires_grad = False
+        self.mil = nn.Sequential(
+            nn.Conv2d(2048, 128, kernel_size=1, stride=1, padding=0),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=1, stride=1, padding=0),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 1, kernel_size=1, stride=1, padding=0),
+        )
+        self.pooling = nn.MaxPool2d(7, stride=1)
+
+
+
 
     def forward(self, x):
-        x = self.features(x)
-        x = F.relu(x, True)
+        x = self.resnet50.conv1(x)
+        x = self.resnet50.bn1(x)
+        x = self.resnet50.relu(x)
+        x = self.resnet50.maxpool(x)
 
-        x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
-        #        print(x.size())
-        x = self.fc(x)
-        x = F.softmax(x, dim=1)
-        #        x = F.relu(x, inplace=True)
+        x = self.resnet50.layer1(x)
+
+        x = self.resnet50.layer2(x)
+
+        x = self.resnet50.layer3(x)
+        # layer3 64 1024 14 14
+        x = self.resnet50.layer4(x)
         # print(x.shape)
-        return x
+        # layer4 64 2048 7 7
+        x = self.mil(x)
+        feature_map = F.sigmoid(x)
+        # print("feature map",feature_map.shape) #64 1 7 7
+
+        x = self.pooling(feature_map) #????????????
+
+        # print("pooling ",x.shape) #64 1 1 1
+        x = x.view(x.size(0), 1)
+        # print("output,",x.shape)
+
+
+
+
+        return x,feature_map
 
 
 if __name__ == '__main__':
@@ -308,18 +351,19 @@ if __name__ == '__main__':
 
     #    VALID_IMAGE_LIST = './data/data_entry_test.txt'
     #    HEATMAP_IMAGE_LIST = './data/data_entry_boxonly_test_.txt'
-    SAVE_DIRS = 'Densenet_pretrain_224aug_lr0.001_Class3_pathology_roi'
-    N_CLASSES = 3
+    SAVE_DIRS = 'ResNet50_pretrain_224aug_Class2_mil_sparse'
+    N_CLASSES = 2
     BATCH_SIZE = 64
     LR = 0.001  # * 0.1 * 0.1
+    WD_MIL=0.0005
     CKPT_NAME = 'ResNet50_pretrain'  # pkl name for saving
     PKL_DIR = 'pkl/' + SAVE_DIRS + '/'
     LOG_DIR = 'logs/' + SAVE_DIRS + '/'
-    STEP = 50000
+    STEP = 20000
     TRAIN = False
-    TEST = True
+    TEST=True
     Generate_Heatmap = False
-    Pre = True
+    Pre = False
     correct_pre = 0
     OUTPUT_DIR = 'output/' + SAVE_DIRS + '/'
     if os.path.isdir(OUTPUT_DIR):
@@ -327,7 +371,7 @@ if __name__ == '__main__':
     else:
         os.mkdir(OUTPUT_DIR)
 
-    CKPT_PATH = PKL_DIR + CKPT_NAME + '_' + str(3850) + '.pkl'  # pretrain model for loading
+    CKPT_PATH = PKL_DIR + CKPT_NAME + '_' + str(19650) + '.pkl'  # pretrain model for loading
 
     # prepare training set
     print('prepare training set...')
@@ -347,7 +391,7 @@ if __name__ == '__main__':
     # initialize and load the model
     print('initialize and load the model...')
 
-    model = DenseNet121(N_CLASSES)
+    model = ResNet50(N_CLASSES)
     #    print(model.state_dict().keys())
     #    asas
     if Pre:
@@ -390,7 +434,7 @@ if __name__ == '__main__':
         optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LR, weight_decay=1e-5)
         #        optimizer = optim.SGD(filter(lambda p: p.requires_grad, model.parameters()), lr=LR, momentum=0.9)
         #         define the changing of the learning rate
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20000, gamma=0.1)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10000, gamma=0.1)
         model = torch.nn.DataParallel(model).cuda()
         model.train()
 
@@ -406,6 +450,9 @@ if __name__ == '__main__':
             augment_img = []
             augment_label = []
             augment_weight = []
+            train_correct=0
+
+
 
             #                print('load training data')
             end = cur + BATCH_SIZE
@@ -432,10 +479,15 @@ if __name__ == '__main__':
 
             #                print('forward + backward + optimize...')
             #           softmax predict
-            outputs = model(inputs_sub)
-            # print("outputs,train",outputs.shape)
+            outputs,feature_map = model(inputs_sub)
+            predicted_np = (outputs> 0.5).type(torch.FloatTensor).cuda()
 
-            #            labels_sub = labels_sub.view(-1)
+            #                    print(predicted_np, target_np)
+            for j in range(len(predicted_np)):
+                if(predicted_np[j] == labels_sub[j]):
+                    train_correct+=1
+
+
             labels_np = labels_sub.data.cpu().numpy()
             #            weights[0] = len(labels_np)/(np.sum(labels_np == 0)+1)
             #            weights[1] = len(labels_np)/(np.sum(labels_np == 1)+1)
@@ -448,7 +500,7 @@ if __name__ == '__main__':
             #            criterion = nn.CrossEntropyLoss()#weight = weights)
             bce_criterion = nn.BCELoss(size_average=True)
             #            print(labels_sub.size(), outputs.size())
-            loss = bce_criterion(outputs, labels_sub)
+            loss = bce_criterion(outputs, labels_sub) +torch.sum(feature_map)*WD_MIL/BATCH_SIZE
             #                loss = F.binary_cross_entropy(outputs, labels_sub, size_average=False)
             loss.backward()
             optimizer.step()
@@ -457,19 +509,21 @@ if __name__ == '__main__':
 
             if step % 20 == 0:
                 running_loss = running_loss / 20
-                # with open('train_running_loss.txt', 'a+') as f:
-                #     f.write(step+' '+running_loss)
+                train_correctsum = train_correct/ (BATCH_SIZE)
+                print('Accuracy of the network on train  images: %.4f' % (train_correctsum))
+                train_correct=0
                 print('[STEP:%d] loss: %.6f' % (step, running_loss))
                 writer.add_scalar('Loss1', running_loss, step)
                 running_loss = 0.
 
             if step % 50 == 0:
+
                 model.eval()
                 running_loss_val = 0.
                 # test
                 print('Validation Testing......')
-                # 0 1 2
-                CLASS_NAMES = ['Benign', 'Malignant', 'Normal']
+                # 0 1
+                CLASS_NAMES = ['Benign+normal', 'Malignant']
                 print_learning_rate(optimizer)
 
                 correct = []
@@ -477,19 +531,21 @@ if __name__ == '__main__':
                     inputs_sub = Variable(inputs_sub.cuda())
                     labels_sub = Variable(labels_sub.cuda())
                     #                    labels_sub = labels_sub.view(-1)
-                    outputs = model(inputs_sub)
-                    # zhunque label zhi
-                    _, predicted = torch.max(outputs.data, 1)
-                    predicted_np = predicted.cpu().numpy()
-                    _, label = torch.max(labels_sub.data, 1)
-                    target_np = label.cpu().numpy()
+                    outputs,feature_map = model(inputs_sub)
+
+                    # _, predicted = torch.max(outputs.data, 1)
+                    # predicted_np = predicted.cpu().numpy()
+                    # _, label = torch.max(labels_sub.data, 1)
+                    # target_np = label.cpu().numpy()
+                    predicted_np = (outputs.data > 0.5).type(torch.FloatTensor).cuda()
+
                     #                    print(predicted_np, target_np)
-                    correct.append(int(predicted_np == target_np))
+                    correct.append(int(predicted_np == labels_sub))
                     #                       print('compute val loss...')
-                    loss = bce_criterion(outputs, labels_sub)
+                    loss = bce_criterion(outputs, labels_sub) + torch.sum(feature_map) * WD_MIL
                     running_loss_val += loss.data[0]
                 running_loss_val = running_loss_val / total_valid_length
-                print('[EPOCH:%d] loss_val: %.6f' % (step, running_loss_val))
+                print('[step:%d] loss_val: %.6f' % (step, running_loss_val))
                 writer.add_scalar('Loss_val', running_loss_val, step)
                 correctsum = np.sum(correct) / total_valid_length
                 print('Accuracy of the network on test images: %.4f' % (correctsum))
@@ -511,41 +567,51 @@ if __name__ == '__main__':
         writer.close()
         print('Finished Training')
 
+
+
     if TEST:
         model = torch.nn.DataParallel(model).cuda()
         model.eval()
         total_valid_length = len(valid_dataset)
         # 0 1 2
-        CLASS_NAMES = ['Benign', 'Malignant', 'Normal']
+        CLASS_NAMES = ['Benign+normal', 'Malignant']
         print(' initialize the ground truth and output tensor...')
         gt = torch.FloatTensor()
         gt = gt.cuda()
-        pred = torch.FloatTensor()
+        pred = torch.FloatTensor() 
         pred = pred.cuda()
         correct = []
         for p, (inputs_sub, labels_sub, weights_sub) in enumerate(valid_loader):
             if p < 2:
                 print('the [%d/%d] testbatch' % (p, total_valid_length / 1))
             input_img = Variable(inputs_sub.cuda(), volatile=True)
-            probs = model(input_img)
-            _, predicted = torch.max(probs.data, 1)
+            outputs,feature_map = model(input_img)
+            predicted= (outputs.data > 0.5).type(torch.FloatTensor).cuda()
+
             predicted_np = predicted.cpu().numpy()
-            _, label = torch.max(labels_sub, 1)
-            target_np = label.cpu().numpy()
+
+            target_np = labels_sub.cpu().numpy()
             #            print(predicted_np, target_np[0])
             #            asas
             correct.append(int(predicted_np == target_np))
 
             labels_sub = labels_sub.cuda()
-            gt = torch.cat((gt, labels_sub), 0)
-            pred = torch.cat((pred, probs.data), 0)
+            gt = torch.cat((gt, labels_sub), 0)#label
+            pred = torch.cat((pred, predicted), 0) #yuce
+            # print(gt.shape)
+            # print(gt)
 
         correctsum = np.sum(correct) / total_valid_length
         print('Accuracy of the network on test images: %.4f' % (correctsum))
         # Plot Confusion Matrix
         _, gtmax = torch.max(gt, 1)
         _, predmax = torch.max(pred, 1)
-        plotCM(CLASS_NAMES, gtmax.cpu().numpy(), predmax.cpu().numpy(), 'Confusion Matrix/' + SAVE_DIRS + '.png')
+        # plotCM(CLASS_NAMES, gtmax.cpu().numpy(), predmax.cpu().numpy(), 'Confusion Matrix/' + SAVE_DIRS + '.png')
+        # plotCM
+        # plot_confusion_matrix(gt,pred,'Confusion Matrix/' + SAVE_DIRS + '.png')
+        cm=confusion_matrix(y_true=gt,y_pred=pred)
+        print(cm)
+
         # Compute AUROC
         print('Compute validation dataset avgAUROC...')
         gt_npy = gt.cpu().numpy()
@@ -558,185 +624,5 @@ if __name__ == '__main__':
         for idx in range(N_CLASSES):
             print('The AUROC of {} is {}'.format(CLASS_NAMES[idx], AUROCs[idx]))
 
-'''
-    if Generate_Heatmap:
-        model = torch.nn.DataParallel(model).cuda()
-        model.eval()
-        gcam = GradCAM(model=model, cuda=True)
-        #=================initialize the prediction and ground truth for bbox================
-        prediction = {}
-        ground = {}
-        color_map = np.array([[255, 0, 0], [0, 255, 0]])#red: pred, G: gt
-        font = cv2.FONT_HERSHEY_COMPLEX
-        total_heatmap_length = len(heatmap_loader)
-        CLASS_NAMES = ['Benign', 'Malignant', 'Normal']
-        # CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax']
-        thresholds = [0.11, 0.027, 0.14, 0.14, 0.05, 0.054, 0.013,
-                      0.05, 0.05, 0.027, 0.023, 0.015, 0.029, 0.002]  
-        for p, (input_var, target, weight, img_name, ill_name, b_box) in enumerate(heatmap_loader):
 
-            img_name = str(img_name).split('/')[-1].split("'")[0]
-            ill_name = str(ill_name).split("'")[1]
-            if not img_name in ground:
-                ground[img_name] = {}
-            if not ill_name in ground[img_name]:
-                ground[img_name][ill_name] = []
-            ground[img_name][ill_name].append(b_box)   
-
-            print('the [%d] testimg'%p)
-            input_img = Variable(input_var.cuda(), requires_grad=True)
-            probs = gcam.forward(input_img)  
-#            probs_np = probs.data.cpu().numpy()
-
-            #---- Blend original and heatmap                   
-            heatmap_output = []                    
-            activate_classes = np.where((np.squeeze(probs)[:8] > thresholds[:8])==True)[0]               
-            for activate_class in activate_classes:
-
-                gcam.backward(idx=activate_class)
-                output = gcam.generate(target_layer="module.densenet121.features.denseblock4.denselayer16.conv2")
-#                output = cv2.resize(output, (224, 224))
-
-                if np.sum(np.isnan(output)) > 0:
-                    print("fxxx nan")
-                heatmap_output.append(output)
-
-            for k, npy in zip(activate_classes, heatmap_output):
-
-                ill_name_pre = CLASS_NAMES[k]
-
-                hmask  = npy
-                if np.isnan(hmask).any():
-                    continue                  
-
-                if not img_name in prediction:
-                    prediction[img_name] = {}
-                if not ill_name_pre in prediction[img_name]:
-                    prediction[img_name][ill_name_pre] = {}
-                    prediction[img_name][ill_name_pre]['heatmap'] = []                     
-                prediction[img_name][ill_name_pre]['heatmap'].append(hmask) 
-
-        color = {CLASS_NAMES[0]: [255, 0, 0], CLASS_NAMES[1]: [0, 255, 0], CLASS_NAMES[2]: [0, 0, 255], 
-                      CLASS_NAMES[3]: [240,255,0], CLASS_NAMES[4]: [128, 0, 128], CLASS_NAMES[5]: [244,164,96], 
-                      CLASS_NAMES[6]: [119,136,153], CLASS_NAMES[7]: [50,205,50]}
-        gtall_num = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        acc = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        afp = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        thresholds = {'Atelectasis':0.5, 'Cardiomegaly':0.01, 'Effusion':0.5, 
-                      'Infiltration':0.5, 'Mass':0.5, 'Nodule':0.5, 
-                      'Pneumonia':0.02, 'Pneumothorax':0.06} 
-        best_ior = {'Atelectasis': 0.0, 'Cardiomegaly': 0.0, 'Effusion': 0.0, 'Infiltration': 0.0, 'Mass': 0.0, 'Nodule': 0.0, 'Pneumonia': 0.0,
-        'Pneumothorax': 0.0}
-        best_t = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        'Pneumothorax': 0}
-        iou = {}
-        for t in np.arange(0.01,1,0.01):
-            for img_name in ground:                
-                imgOriginal = cv2.imread(os.path.join(DATA_DIR, img_name), 1)
-                w_ori = np.shape(imgOriginal)[1]
-                h_ori = np.shape(imgOriginal)[0]
-                gt_num = 0
-                positive_num = 0
-                for ill_name in ground[img_name]:
-                    gmask = np.zeros([h_ori, w_ori])
-                    for i in range(len(ground[img_name][ill_name])):
-                        x = int(ground[img_name][ill_name][i][0])
-                        y = int(ground[img_name][ill_name][i][1])
-                        w = int(ground[img_name][ill_name][i][2])
-                        h = int(ground[img_name][ill_name][i][3])
-                    gmask[y:y+h, x:x+w] = 1
-                    if not ill_name in iou:
-                        iou[ill_name] = {}
-                        iou[ill_name]['count'] = 0
-                        iou[ill_name]['iou'] = 0.0
-                    if img_name in prediction:
-                        for ill_name_pre in prediction[img_name]:
-                            if ill_name_pre == ill_name:
-                                hmask = prediction[img_name][ill_name_pre]['heatmap'][0]
-                                hmask[np.where(hmask<t)] = 0
-                                hmask = cv2.resize(hmask, (h_ori, w_ori))   
-                                hmask[np.where(hmask!=0)] = 1 
-                                if np.sum(hmask) == 0:
-                                    continue
-                                IOU = np.sum(hmask*gmask)/(np.sum(hmask)+np.sum(gmask)-np.sum(hmask*gmask))
-                                iou[ill_name]['iou'] += IOU
-                                iou[ill_name]['count'] += 1
-            for ill in best_ior:
-                if iou[ill]['count'] == 0: continue
-                IOU=iou[ill]['iou']/iou[ill]['count']
-                if IOU>best_ior[ill]: 
-                    best_ior[ill]=IOU
-                    best_t[ill] = t
-                iou[ill]['iou']=0.0
-                iou[ill]['count']=0
-        for ill in best_ior:
-            print('[best_ior/best_threshold][{}/{}] of {}'.format(best_ior[ill],best_t[ill],ill))
-        a=1/0
-        ior = {}
-        for img_name in ground:                
-            imgOriginal = cv2.imread(os.path.join(DATA_DIR, img_name), 1)
-            w_ori = np.shape(imgOriginal)[1]
-            h_ori = np.shape(imgOriginal)[0]
-            gt_num = 0
-            positive_num = 0
-            for ill_name in ground[img_name]:
-                gmask = np.zeros([h_ori, w_ori])
-                for i in range(len(ground[img_name][ill_name])):
-                    x = int(ground[img_name][ill_name][i][0])
-                    y = int(ground[img_name][ill_name][i][1])
-                    w = int(ground[img_name][ill_name][i][2])
-                    h = int(ground[img_name][ill_name][i][3])
-                    cv2.rectangle(imgOriginal, (x, y), (x+w, y+h), color_map[1], 2)
-                    cv2.putText(imgOriginal, ill_name, (x, y), font, 1, color_map[1], 1)
-                    gmask[y:y+h, x:x+w] = 1
-                gtall_num[ill_name] += 1                
-                if not ill_name in ior:
-                    ior[ill_name] = {}
-                    ior[ill_name]['count'] = 0
-                    ior[ill_name]['ior'] = 0.0
-                if img_name in prediction:
-                    for ill_name_pre in prediction[img_name]:
-                        if ill_name_pre == ill_name:
-                            hmask = prediction[img_name][ill_name_pre]['heatmap'][0] 
-                            hmask[np.where(hmask<thresholds[ill_name_pre])] = 0 
-                            hmask = cv2.resize(hmask, (h_ori, w_ori))  
-                            hmmask = hmask/hmask.max()                  
-                            hmmask = cv2.applyColorMap(np.uint8(255*hmmask), cv2.COLORMAP_JET) 
-                            img = hmmask*0.5 + imgOriginal
-                            outname = os.path.join(OUTPUT_DIR, img_name+'_'+ ill_name_pre +'.png')
-                            cv2.imwrite(outname, img)   
-
-                            hmask[np.where(hmask!=0)] = 1
-                            if np.sum(hmask) == 0:
-                                continue
-                            iobb = np.sum(hmask*gmask)/np.sum(hmask)
-                            ior[ill_name]['ior'] += iobb
-                            ior[ill_name]['count'] += 1
-                            if iobb >= 0.1: acc[ill_name] += 1
-                            elif iobb < 0.1: afp[ill_name] += 1           
-
-
-                        if not ill_name_pre in ground[img_name]:
-                            afp[ill_name_pre] += 1
-        ACC = 0.0
-        AFP = 0.0
-        IOR = 0.0
-        for ill_name in gtall_num:
-            acc[ill_name] = float(acc[ill_name])/float(gtall_num[ill_name])
-            ACC += acc[ill_name]
-            afp[ill_name] = float(afp[ill_name])/float(gtall_num[ill_name])
-            AFP += afp[ill_name]
-            print('The ACC of {} with threshold {} is : {}'.format(ill_name, 0.1, acc[ill_name]))
-            print('The AFP of {} with threshold {} is : {}'.format(ill_name, 0.1, afp[ill_name]))  
-            if ior[ill_name]['count'] == 0:continue
-            ior[ill_name]['avgIoR'] = float(ior[ill_name]['ior'])/float(ior[ill_name]['count'])
-            IOR += ior[ill_name]['avgIoR']      
-            print('The avgIoR of {} is : {}'.format(ill_name, ior[ill_name]['avgIoR']))  
-        print('The average of ACC is : {}'.format(ACC/8.0))
-        print('The average of AFP is : {}'.format(AFP/8.0))
-        print('The average of IOR is : {}'.format(IOR/8.0))
-        '''
 

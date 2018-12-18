@@ -1,4 +1,3 @@
-# densenet 121  class 3
 from __future__ import division, print_function
 import torch
 import torch.nn as nn
@@ -22,6 +21,7 @@ import torch.optim as optim
 import cv2
 import random
 from collections import OrderedDict
+
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 os.environ['CUDA_VISIBLE_DEVICES'] = "1"
@@ -316,7 +316,7 @@ if __name__ == '__main__':
     PKL_DIR = 'pkl/' + SAVE_DIRS + '/'
     LOG_DIR = 'logs/' + SAVE_DIRS + '/'
     STEP = 50000
-    TRAIN = False
+    TRAIN = True
     TEST = True
     Generate_Heatmap = False
     Pre = True
@@ -327,7 +327,7 @@ if __name__ == '__main__':
     else:
         os.mkdir(OUTPUT_DIR)
 
-    CKPT_PATH = PKL_DIR + CKPT_NAME + '_' + str(3850) + '.pkl'  # pretrain model for loading
+    CKPT_PATH = PKL_DIR + CKPT_NAME + '_' + str(0) + '.pkl'  # pretrain model for loading
 
     # prepare training set
     print('prepare training set...')
