@@ -1,3 +1,4 @@
+# resnet50 cam class3  test cam test
 from __future__ import division, print_function
 import torch
 import torch.nn as nn
@@ -21,10 +22,28 @@ import torch.optim as optim
 import cv2
 import random
 from collections import OrderedDict
+from pooling import WildcatPool2d,ClassWisePool
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
+
+def returnCAM(feature_conv, weight_softmax, class_idx):
+    # generate the class activation maps upsample to 256x256
+    size_upsample = (224, 224)
+    bz, nc, h, w = feature_conv.shape
+    output_cam = []
+    for idx in class_idx:
+        cam = weight_softmax[idx].dot(feature_conv.reshape((nc, h*w)))
+        print(cam.shape) #3 49
+        cam = cam.reshape(h, w)
+        print(cam.shape)
+        cam = cam - np.min(cam)
+        cam_img = cam / np.max(cam)
+        cam_img = np.uint8(255 * cam_img)
+        output_cam.append(cv2.resize(cam_img, size_upsample))
+
+    return output_cam
 
 def compute_AUCs(gt_np, pred_np):
     AUROCs = []
@@ -150,24 +169,30 @@ class ChestXrayDataSet(Dataset):
         #        data_path = sys.argv[1]
         self.train_or_valid = train_or_valid
         image_names = []
+        image_short_names=[]
         labels = []
         with open(image_list_file, "r") as f:
             for line in f:
                 items = line.split()
                 image_name = items[0]
+
                 label = items[1]
                 label = [int(i) for i in label]
-                if label == [0] or label == [1]:
+                # if label == [0] or label == [1]:
+                if label == [0]:
                     label = [0]
-                elif label == [2] or label == [3]:
+                elif label == [2]:
+                # elif label == [2] or label == [3]:
                     label = [1]
-                elif label == [4]:
-                    label = [2]
-                label = np.eye(N_CLASSES, dtype=int)[label[0]]  # onehot
+                else:# label == [4]:
+                    # label = [2]
+                    continue
+                # label = np.eye(N_CLASSES, dtype=int)[label[0]]  # onehot
+                image_short_names.append(items[0])
                 image_name = os.path.join(data_dir, image_name)
                 image_names.append(image_name)
                 labels.append(label)
-
+        self.image_short_names=image_short_names
         self.image_names = image_names
         self.labels = labels
         self.augm = augm
@@ -187,6 +212,7 @@ class ChestXrayDataSet(Dataset):
             image and its labels
         """
         image_name = self.image_names[index]
+        image_short_name=self.image_short_names[index]
         image = cv2.imread(image_name)
         # print(image_name)
 
@@ -203,8 +229,9 @@ class ChestXrayDataSet(Dataset):
 
         label = self.labels[index]
         label_inverse = np.ones(len(label)) - label
+        # label_inverse = np.ones(1) - label
         weight = np.add((label_inverse * self.label_weight_neg), (label * self.label_weight_pos))
-        return torch.FloatTensor(image), torch.FloatTensor(label), torch.from_numpy(weight).type(torch.FloatTensor)
+        return torch.FloatTensor(image), torch.LongTensor(label), torch.from_numpy(weight).type(torch.FloatTensor),image_name,image_short_name
 
     def __len__(self):
         return len(self.labels)
@@ -260,7 +287,7 @@ class ResNet50(nn.Module):
     def __init__(self, num_classes):
         super(ResNet50, self).__init__()
         self.resnet50 = models.resnet50(pretrained=True)
-        self.features=self.resnet50.features
+        # self.features=self.resnet50.features
 #        for p in self.resnet50.conv1.parameters():
 #            p.requires_grad = False
 #        for p in self.resnet50.bn1.parameters():
@@ -284,16 +311,17 @@ class ResNet50(nn.Module):
         x = self.resnet50.layer2(x)
         x = self.resnet50.layer3(x)
         xm = self.resnet50.layer4(x) #64 2048 7 *7
+        # tensor
         xm=F.sigmoid(xm)
 
 
         x = self.avgpool(xm) # 64 2048 1 1
         x = x.view(x.size(0), -1) # 64 2048
 #        print(x.size())
-        x = self.fc(x) #64* 2048  -> 64*3
-        x =F.softmax(x)
+        x = self.fc(x)
+        # x =F.softmax(x)#64* 2048  -> 64*3
 #        x = F.relu(x, inplace=True)
-        return xm,x #heatmap  output pro
+        return xm,x #heatmap  outputtensor  pro
 
 
 if __name__ == '__main__':
@@ -314,18 +342,18 @@ if __name__ == '__main__':
 
     #    VALID_IMAGE_LIST = './data/data_entry_test.txt'
     #    HEATMAP_IMAGE_LIST = './data/data_entry_boxonly_test_.txt'
-    SAVE_DIRS = 'ResNet50_pretrain_224aug_Class3_pathology_roi'
-    N_CLASSES = 3
+    SAVE_DIRS = 'ResNet50_pretrain_224aug_Class2_clca_benign_malignant_roi'
+    N_CLASSES = 2
     BATCH_SIZE = 64
     LR = 0.0001  # * 0.1 * 0.1
     CKPT_NAME = 'ResNet50_pretrain'  # pkl name for saving
     PKL_DIR = 'pkl/' + SAVE_DIRS + '/'
     LOG_DIR = 'logs/' + SAVE_DIRS + '/'
     STEP = 50000
-    TRAIN = False
+    TRAIN = True
     TEST = False
-    Generate_Heatmap = True
-    Pre = True
+    Generate_Heatmap = False
+    Pre = False
     correct_pre = 0
     OUTPUT_DIR = 'output/' + SAVE_DIRS + '/'
     if os.path.isdir(OUTPUT_DIR):
@@ -354,7 +382,7 @@ if __name__ == '__main__':
                                      image_list_file=HEATMAP_IMAGE_LIST,
                                      train_or_valid="valid"
                                      )
-    heatmap_loader = DataLoader(dataset=valid_dataset, batch_size=1, shuffle=False)
+    heatmap_loader = DataLoader(dataset=heatmap_dataset, batch_size=1, shuffle=False)
 
 
     # initialize and load the model
@@ -413,6 +441,7 @@ if __name__ == '__main__':
         total_valid_length = len(valid_dataset)
         perm = np.random.permutation(np.arange(total_train_length))
         cur = 0
+        correctsum = 0.
         #        for epoch in range(epoc, EPOCH):
         for step in range(ste, STEP + 1):
             #            for cur in np.arange(0, total_train_length, BATCH_SIZE):
@@ -428,7 +457,7 @@ if __name__ == '__main__':
                 cur = 0
                 perm = np.random.permutation(np.arange(len(train_dataset)))
             for p in p_indexs:
-                single_img, single_label, single_weight = train_dataset[p]
+                single_img, single_label, single_weight,img_name,img_short_name = train_dataset[p]
                 augment_img.append(single_img)
                 augment_label.append(single_label)
                 augment_weight.append(single_weight)
@@ -446,10 +475,18 @@ if __name__ == '__main__':
             #                print('forward + backward + optimize...')
             #           softmax predict
             feature_map,outputs = model(inputs_sub)
+            outps = F.softmax(outputs, 1)
+            _, predicted = torch.max(outps.data, 1)
+            predicted_np = predicted.cpu().numpy()
+            target_np = labels_sub.data.squeeze().cpu().numpy()
+            # print(predicted_np, target_np)
+            correct = np.sum(predicted_np == target_np)
+            correctsum += float(correct)/float(BATCH_SIZE)
             # print("outputs,train",outputs.shape)
 
             #            labels_sub = labels_sub.view(-1)
             labels_np = labels_sub.data.cpu().numpy()
+            # print(labels_np.shape)
             #            weights[0] = len(labels_np)/(np.sum(labels_np == 0)+1)
             #            weights[1] = len(labels_np)/(np.sum(labels_np == 1)+1)
             #            weights[2] = len(labels_np)/(np.sum(labels_np == 2)+1)
@@ -458,10 +495,13 @@ if __name__ == '__main__':
             #            weights =Variable( torch.from_numpy(weights).type(torch.FloatTensor).cuda())
 
             outputs_np = outputs.data.cpu().numpy()
-            #            criterion = nn.CrossEntropyLoss()#weight = weights)
-            bce_criterion = nn.BCELoss(size_average=True)
+                       # criterion = nn.CrossEntropyLoss()#weight = weights)
+            criterion = nn.NLLLoss()
+            # bce_criterion = nn.BCELoss(size_average=True)
             #            print(labels_sub.size(), outputs.size())
-            loss = bce_criterion(outputs, labels_sub)
+            # print(outputs, labels_sub)
+            loss = criterion(F.log_softmax(outputs, 1), labels_sub.squeeze())
+            # loss = bce_criterion(outputs, labels_sub)
             #                loss = F.binary_cross_entropy(outputs, labels_sub, size_average=False)
             loss.backward()
             optimizer.step()
@@ -470,15 +510,16 @@ if __name__ == '__main__':
 
             if step % 20 == 0:
                 running_loss = running_loss / 20
-                with open('train_running_loss.txt', 'a+') as f:
-                    f.write(step + ' ' + running_loss)
                 print('[STEP:%d] loss: %.6f' % (step, running_loss))
                 writer.add_scalar('Loss1', running_loss, step)
+                correctsum /= 20.
+                print("Acc of Train: %.4f"%correctsum)
                 running_loss = 0.
+                correctsum = 0.
 
             if step % 50 == 0:
                 model.eval()
-                running_loss_val = 0.
+                # running_loss_val = 0.
                 # test
                 print('Validation Testing......')
                 # 0 1 2
@@ -486,24 +527,27 @@ if __name__ == '__main__':
                 print_learning_rate(optimizer)
 
                 correct = []
-                for p, (inputs_sub, labels_sub, weights_sub) in enumerate(valid_loader):
+                for p, (inputs_sub, labels_sub, weights_sub,img_name,img_short_name) in enumerate(valid_loader):
                     inputs_sub = Variable(inputs_sub.cuda())
                     labels_sub = Variable(labels_sub.cuda())
                     #                    labels_sub = labels_sub.view(-1)
-                    outputs = model(inputs_sub)
+                    feature_map, outputs = model(inputs_sub)
                     # zhunque label zhi
-                    _, predicted = torch.max(outputs.data, 1)
+                    outps = F.softmax(outputs, 1)
+                    _, predicted = torch.max(outps.data, 1)
                     predicted_np = predicted.cpu().numpy()
-                    _, label = torch.max(labels_sub.data, 1)
-                    target_np = label.cpu().numpy()
+                    # _, label = torch.max(labels_sub.data, 1)
+                    target_np = labels_sub.data.squeeze().cpu().numpy()
                     #                    print(predicted_np, target_np)
                     correct.append(int(predicted_np == target_np))
                     #                       print('compute val loss...')
-                    loss = bce_criterion(outputs, labels_sub)
-                    running_loss_val += loss.data[0]
-                running_loss_val = running_loss_val / total_valid_length
-                print('[EPOCH:%d] loss_val: %.6f' % (step, running_loss_val))
-                writer.add_scalar('Loss_val', running_loss_val, step)
+                    # loss = bce_criterion(outputs, labels_sub)
+                    # print(outputs, labels_sub)
+                    # loss_val = F.nll_loss(F.log_softmax(outputs, 1), labels_sub.squeeze())
+                    # running_loss_val += loss_val.data[0]
+                # running_loss_val = running_loss_val / total_valid_length
+                # print('[EPOCH:%d] loss_val: %.6f' % (step, running_loss_val))
+                # writer.add_scalar('Loss_val', running_loss_val, step)
                 correctsum = np.sum(correct) / total_valid_length
                 print('Accuracy of the network on test images: %.4f' % (correctsum))
                 writer.add_scalar('Acc_val', correctsum, step)
@@ -520,7 +564,7 @@ if __name__ == '__main__':
                     correct_pre = correctsum
                     print('Save best statistics done!')
                 print('************************************')
-        f.close()
+
         writer.close()
         print('Finished Training')
 
@@ -536,11 +580,12 @@ if __name__ == '__main__':
         pred = torch.FloatTensor()
         pred = pred.cuda()
         correct = []
-        for p, (inputs_sub, labels_sub, weights_sub) in enumerate(valid_loader):
+        for p, (inputs_sub, labels_sub, weights_sub,img_name,img_short_name) in enumerate(valid_loader):
             if p < 2:
                 print('the [%d/%d] testbatch' % (p, total_valid_length / 1))
             input_img = Variable(inputs_sub.cuda(), volatile=True)
-            probs = model(input_img)
+            feature_map, probs = model(input_img)
+            probs = F.softmax(probs, 1)
             _, predicted = torch.max(probs.data, 1)
             predicted_np = predicted.cpu().numpy()
             _, label = torch.max(labels_sub, 1)
@@ -577,137 +622,70 @@ if __name__ == '__main__':
         model.eval()
         total_heatmap_length = len(heatmap_loader)
         #        CLASS_NAMES = ['Atelectasis', 'Cardiomegaly', 'Effusion', 'Infiltration', 'Mass', 'Nodule', 'Pneumonia', 'Pneumothorax']
-        CLASS_NAMES = ['B', 'M', 'Normal']
+        CLASS_NAMES = ['B', 'M', 'N']
         color_map = [(0, 0, 255), (0, 255, 0)]
         font = cv2.FONT_HERSHEY_COMPLEX
-        thresholds = [0.132260, 0.038287, 0.166762, 0.173932, 0.045059, 0.043594, 0.013012,
-                      0.043318, 0.059798, 0.028319, 0.011727, 0.015320, 0.031429, 0.002289]
-        ground = {}
-        #        gmasks = {}
-        prediction = {}
-        for p, (input_var, target,weight) in enumerate(heatmap_loader):
+
+        params = list(model.parameters())
+        weight_softmax = np.squeeze(params[-2].data.cpu().numpy())
 
 
-            ill_name = CLASS_NAMES[int(target)]
+
+
+
+
+        for p, (input_var, target,weight,img_name,img_short_name) in enumerate(heatmap_loader):
+
+
+
+            # label_name = CLASS_NAMES[int(target)]
 
             if p < 2:
                 print('the [%d] heatmap img' % p)
             input_img = Variable(input_var.cuda(), volatile=True)
             probs_tensor, outp = model(input_img)
+            _, predicted = torch.max(outp.data, 1)
+            _,label=torch.max(target.data,1)
+            predicted_np = predicted.cpu().numpy()
+
+            # get softmax para
+
+            print(label)
+            print(predicted)
+            params = list(model.parameters())
+            weight_softmax = np.squeeze(params[-2].data.cpu().numpy())
+
             probs_tensor_np = probs_tensor.data.cpu().numpy()
-            probs_np = outp.data.cpu().numpy()
+
 
             #            print('generate heatmap...')
+            prob,idx=outp.sort(0,True)
+            probs_np = outp.data.cpu().numpy()
+            idx=idx.cpu().numpy()
 
             heatmaps = []
             activate_classes = [0, 1, 2]
-            #            activate_classes =np.where((np.squeeze(probs_np)[:8] > thresholds[:8])==True)[0]
-            #            activate_classes = np.where((np.squeeze(probs_np)[:8] > 0.5)==True)[0]
-            for activate_class in activate_classes:
-                heatmaps.append(probs_tensor_np[0, activate_class, :, :])
+            print("1,",probs_tensor_np.shape)
+            print("2,",weight_softmax.shape)
 
-            # for k, npy in zip(activate_classes, heatmaps):
-            #     ill_name_pre = CLASS_NAMES[k]
-            #     hmask = npy
-            #     if np.isnan(hmask).any():
-            #         continue
-            #     if not img_name in prediction:
-            #         prediction[img_name] = {}
-            #     #                    gmasks[img_name] = {}
-            #     if not ill_name_pre in prediction[img_name]:
-            #         prediction[img_name][ill_name_pre] = {}
-            #         prediction[img_name][ill_name_pre]['heatmap'] = []
-            #         #                    gmasks[img_name][ill_name_pre] = []
-            #     prediction[img_name][ill_name_pre]['heatmap'].append(hmask)
-                #                m = mask.numpy()[0][k,:,:]
-        #                asas
-        #                gmasks[img_name][ill_name_pre].append(m)
+            CAMs = returnCAM(probs_tensor_np, weight_softmax, predicted_np)
+            print(predicted_np)
 
-        #        gtall_num = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        #        'Pneumothorax': 0}
-        #        acc = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        #        'Pneumothorax': 0}
-        #        afp = {'Atelectasis': 0, 'Cardiomegaly': 0, 'Effusion': 0, 'Infiltration': 0, 'Mass': 0, 'Nodule': 0, 'Pneumonia': 0,
-        #        'Pneumothorax': 0}
-        gtall_num = {'B': 0, 'M': 0, 'N': 0}
-        acc =  {'B': 0, 'M': 0, 'N': 0}
-        afp = {'B': 0, 'M': 0, 'N': 0}
-        ior = {}
-        for img_name in ground:
-            imgOriginal = cv2.imread(os.path.join(DATA_DIR, img_name), 1)
-            imgOriginal = cv2.resize(imgOriginal, (224, 224))
-            w_ori = np.shape(imgOriginal)[1]
-            h_ori = np.shape(imgOriginal)[0]
-            gt_num = 0
-            positive_num = 0
-            for ill_name in ground[img_name]:
-                gmaskb = np.zeros([h_ori, w_ori])
-                for i in range(len(ground[img_name][ill_name])):
-                    x = int(ground[img_name][ill_name][i][0])
-                    y = int(ground[img_name][ill_name][i][1])
-                    w = int(ground[img_name][ill_name][i][2])
-                    h = int(ground[img_name][ill_name][i][3])
-                    cv2.rectangle(imgOriginal, (x, y), (x + w, y + h), color_map[1], 2)
-                    cv2.putText(imgOriginal, ill_name, (x, y), font, 1, color_map[1], 1)
-                    gmaskb[y:y + h, x:x + w] = 1
-                gtall_num[ill_name] += 1
-                if not ill_name in ior:
-                    ior[ill_name] = {}
-                    ior[ill_name]['count'] = 0
-                    ior[ill_name]['ior'] = 0.0
-                if img_name in prediction:
-                    for ill_name_pre in prediction[img_name]:
-                        if ill_name_pre == ill_name:
-                            hmask = prediction[img_name][ill_name_pre]['heatmap'][0]
-                            #                            gmask = gmasks[img_name][ill_name_pre][0]
-                            #                            gmask = cv2.resize(gmask, (h_ori, w_ori))
-                            #                            gmask[np.where(gmask!=0)] = 1
-                            #                            gmmask = cv2.applyColorMap(np.uint8(255*gmask), cv2.COLORMAP_JET)
-                            hmask[np.where(hmask < 0.5 * hmask.max())] = 0
-                            hmask = cv2.resize(hmask, (h_ori, w_ori))
-                            hmmask = (hmask - hmask.min()) / hmask.max()
-                            hmmask = cv2.applyColorMap(np.uint8(255 * hmmask), cv2.COLORMAP_JET)
-                            img = hmmask * 0.5 + imgOriginal
-                            outname = os.path.join(OUTPUT_DIR, img_name + '_' + ill_name_pre + '.png')
-                            cv2.imwrite(outname, img)
-                            #                            img_gm = gmmask*0.5 + imgOriginal
-                            #                            outname = os.path.join(OUTPUT_DIR, img_name+'_'+ ill_name_pre + '_' +'.png')
-                            #                            cv2.imwrite(outname, img_gm)
-                            #                            gbmask = cv2.applyColorMap(np.uint8(255*gmaskb), cv2.COLORMAP_JET)
-                            #                            img_gb = gbmask*0.5 + imgOriginal
-                            #                            outname = os.path.join(OUTPUT_DIR, img_name+'_'+ ill_name_pre + '__' +'.png')
-                            #                            cv2.imwrite(outname, img_gb)
+            # print('output CAM.jpg for the top1 prediction: %s' % CLASS_NAMES[idx[0]])
+            print(img_name)
+            img = cv2.imread(img_name[0])
+            height, width, _ = img.shape
+            img_short=img_short_name[0].split(',')[0].split('.')[0]
 
-                            hmask[np.where(hmask != 0)] = 1
-                            if np.sum(hmask) == 0:
-                                continue
-                            iobb = np.sum(hmask * gmaskb) / np.sum(hmask)
-                            #                            iobb = np.sum(hmask*gmaskb)/(np.sum(hmask)+np.sum(gmaskb)-np.sum(hmask*gmaskb))
-                            ior[ill_name]['ior'] += iobb
-                            ior[ill_name]['count'] += 1
-                            if iobb >= 0.1:
-                                acc[ill_name] += 1
-                            elif iobb < 0.1:
-                                afp[ill_name] += 1
+            print(img_short.split('.')[0])
 
-                            #                        if not ill_name_pre in ground[img_name]:
-        #                            afp[ill_name_pre] += 1
-        ACC = 0.0
-        AFP = 0.0
-        IOR = 0.0
-        for ill_name in gtall_num:
-            acc[ill_name] = float(acc[ill_name]) / float(gtall_num[ill_name])
-            ACC += acc[ill_name]
-            afp[ill_name] = float(afp[ill_name]) / float(gtall_num[ill_name])
-            AFP += afp[ill_name]
-            print('The ACC of {} with threshold {} is : {}'.format(ill_name, 0.1, acc[ill_name]))
-            print('The AFP of {} with threshold {} is : {}'.format(ill_name, 0.1, afp[ill_name]))
-            if ior[ill_name]['count'] == 0: continue
-            ior[ill_name]['avgIoR'] = float(ior[ill_name]['ior']) / float(ior[ill_name]['count'])
-            IOR += ior[ill_name]['avgIoR']
-            print('The avgIoR of {} is : {}'.format(ill_name, ior[ill_name]['avgIoR']))
-        print('The average of ACC is : {}'.format(ACC / 8.0))
-        print('The average of AFP is : {}'.format(AFP / 8.0))
-        print('The average of IOR is : {}'.format(IOR / 8.0))
+            heatmap = cv2.applyColorMap(cv2.resize(CAMs[0], (width, height)), cv2.COLORMAP_JET)
+            result = heatmap * 0.3 + img * 0.5
+
+
+            outname = os.path.join(OUTPUT_DIR,  img_short+'_' + 'new' + '.png')
+            cv2.imwrite(outname, result)
+
+
 
 
